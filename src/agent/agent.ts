@@ -152,7 +152,7 @@ export async function runAgent(
   description: string,
   options?: EntryOptions,
 ): Promise<AgentResult> {
-  const workspace = await createWorkspace();
+  const workspace = await createWorkspace(options?.contract);
   const systemPrompt = loadSystemPrompt();
   const model = options?.model ?? anthropic("claude-sonnet-4-6");
   const verbose = options?.verbose ?? false;
