@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "anythingandeverything",
+      "name": "aywitb",
       "devDependencies": {
         "@types/bun": "latest",
         "drizzle-kit": "^0.31.10",

@@ -3,149 +3,211 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import ts from "typescript";
 
-/**
- * Resolves the real directories of the anythingandeverything package source
- * so we can skip transforming our own source files without hardcoded paths.
- */
-const packageSrcDir = resolve(dirname(new URL(import.meta.url).pathname));
-const packageEntrypoint = resolve(packageSrcDir, "..", "index.ts");
+const pluginSourceDirectory = dirname(new URL(import.meta.url).pathname);
+const packageRootDirectory = resolve(pluginSourceDirectory, "..");
 
-/**
- * Determines whether an import specifier resolves to our package.
- * Handles bare specifiers ("anythingandeverything") and relative
- * paths ("../index.ts") by resolving against the importing file.
- */
-function isOurPackageImport(specifier: string, importingFile: string): boolean {
-  // Bare specifier match
-  if (specifier === "anythingandeverything") return true;
+const packageJson = JSON.parse(readFileSync(resolve(packageRootDirectory, "package.json"), "utf-8"));
+const packageName: string = packageJson.name;
 
-  // Relative/absolute path — resolve and check if it lands inside our package
-  if (specifier.startsWith(".") || specifier.startsWith("/")) {
-    const resolved = resolve(dirname(importingFile), specifier);
-    return resolved.startsWith(packageSrcDir) || resolved === packageEntrypoint;
+function collectStringPaths(value: unknown, into: Set<string>) {
+  if (typeof value === "string") {
+    into.add(resolve(packageRootDirectory, value));
+  } else if (typeof value === "object" && value !== null) {
+    for (const nested of Object.values(value)) {
+      collectStringPaths(nested, into);
+    }
   }
-
-  return false;
 }
 
-/**
- * Collect the local names that `entry` is imported as from our package.
- * Handles: import { entry }, import { entry as foo }, etc.
- * Uses real path resolution rather than string matching on specifiers.
- */
+function discoverPackageEntrypoints(): Set<string> {
+  const entrypoints = new Set<string>();
+  collectStringPaths(packageJson.module, entrypoints);
+  collectStringPaths(packageJson.main, entrypoints);
+  collectStringPaths(packageJson.exports, entrypoints);
+  return entrypoints;
+}
+
+const packageEntrypoints = discoverPackageEntrypoints();
+
+function isPackageInternalFile(filePath: string): boolean {
+  return filePath.startsWith(pluginSourceDirectory) || packageEntrypoints.has(filePath);
+}
+
+function shouldSkipTransform(filePath: string): boolean {
+  return isPackageInternalFile(filePath) || filePath.includes("/node_modules/");
+}
+
+function resolveImportToPackage(specifier: string, importingFilePath: string): boolean {
+  if (specifier === packageName) return true;
+
+  const isRelativeOrAbsolute = specifier.startsWith(".") || specifier.startsWith("/");
+  if (!isRelativeOrAbsolute) return false;
+
+  const resolvedPath = resolve(dirname(importingFilePath), specifier);
+  return isPackageInternalFile(resolvedPath);
+}
+
+function getImportedName(element: ts.ImportSpecifier): string {
+  if (element.propertyName) return element.propertyName.text;
+  return element.name.text;
+}
+
 function collectEntryBindings(sourceFile: ts.SourceFile, filePath: string): Set<string> {
-  const bindings = new Set<string>();
+  const localNames = new Set<string>();
 
-  for (const stmt of sourceFile.statements) {
-    if (!ts.isImportDeclaration(stmt)) continue;
-    const specifier = stmt.moduleSpecifier;
-    if (!ts.isStringLiteral(specifier)) continue;
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
 
-    if (!isOurPackageImport(specifier.text, filePath)) continue;
+    const moduleSpecifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(moduleSpecifier)) continue;
+    if (!resolveImportToPackage(moduleSpecifier.text, filePath)) continue;
 
-    const clause = stmt.importClause;
-    if (!clause) continue;
+    const importClause = statement.importClause;
+    if (!importClause) continue;
 
-    // import entry from "..." (default import)
-    if (clause.name?.text === "entry") {
-      bindings.add("entry");
+    if (importClause.name?.text === "entry") {
+      localNames.add("entry");
     }
 
-    // import { entry } or import { entry as foo }
-    const named = clause.namedBindings;
-    if (named && ts.isNamedImports(named)) {
-      for (const el of named.elements) {
-        const imported = (el.propertyName ?? el.name).text;
-        if (imported === "entry") {
-          bindings.add(el.name.text);
-        }
+    const namedBindings = importClause.namedBindings;
+    if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
+
+    for (const element of namedBindings.elements) {
+      if (getImportedName(element) === "entry") {
+        localNames.add(element.name.text);
       }
     }
   }
 
-  return bindings;
+  return localNames;
 }
 
-/**
- * Walks the AST and rewrites `entry<T>(desc, opts?)` calls to inject
- * `{ contract: "T" }` — but only for identifiers that actually resolve
- * to our package's `entry` export.
- */
-function transformEntryGenerics(source: string, filePath: string): string {
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-  );
+function isEntryCallWithGeneric(
+  node: ts.Node,
+  entryNames: Set<string>,
+): node is ts.CallExpression & {
+  expression: ts.Identifier;
+  typeArguments: ts.NodeArray<ts.TypeNode>;
+} {
+  if (!ts.isCallExpression(node)) return false;
+  if (!ts.isIdentifier(node.expression)) return false;
+  if (!entryNames.has(node.expression.text)) return false;
+  if (!node.typeArguments || node.typeArguments.length !== 1) return false;
+  if (node.arguments.length < 1) return false;
+  return true;
+}
 
+function buildContractProperty(contractText: string): ts.PropertyAssignment {
+  return ts.factory.createPropertyAssignment(
+    ts.factory.createIdentifier("contract"),
+    ts.factory.createStringLiteral(contractText),
+  );
+}
+
+function buildOptionsArgument(
+  existingOptionsNode: ts.Expression | undefined,
+  contractText: string,
+): ts.ObjectLiteralExpression {
+  const contractProperty = buildContractProperty(contractText);
+
+  if (existingOptionsNode) {
+    return ts.factory.createObjectLiteralExpression([
+      ts.factory.createSpreadAssignment(existingOptionsNode),
+      contractProperty,
+    ]);
+  }
+
+  return ts.factory.createObjectLiteralExpression([contractProperty]);
+}
+
+function buildReplacementNode(
+  node: ts.CallExpression & { expression: ts.Identifier; typeArguments: ts.NodeArray<ts.TypeNode> },
+  sourceFile: ts.SourceFile,
+): ts.CallExpression {
+  const typeArgument = node.typeArguments[0];
+  if (!typeArgument) {
+    throw new Error("Expected type argument in entry call — predicate should have guaranteed this");
+  }
+
+  const contractText = typeArgument.getText(sourceFile);
+  const descriptionArgument = node.arguments[0];
+  if (!descriptionArgument) {
+    throw new Error("Expected description argument in entry call — predicate should have guaranteed this");
+  }
+
+  const existingOptionsNode = node.arguments[1];
+  const optionsArgument = buildOptionsArgument(existingOptionsNode, contractText);
+  const remainingArguments = Array.from(node.arguments).slice(2);
+
+  return ts.factory.createCallExpression(
+    node.expression,
+    undefined, // strip type arguments — they're erased at runtime anyway
+    [descriptionArgument, optionsArgument, ...remainingArguments],
+  );
+}
+
+function createTransformer(
+  entryNames: Set<string>,
+  sourceFile: ts.SourceFile,
+): ts.TransformerFactory<ts.SourceFile> {
+  return (context) => {
+    function visitor(node: ts.Node): ts.Node {
+      if (isEntryCallWithGeneric(node, entryNames)) {
+        return buildReplacementNode(node, sourceFile);
+      }
+      return ts.visitEachChild(node, visitor, context);
+    }
+
+    return (file) => {
+      const result = ts.visitNode(file, visitor);
+      if (!result || !ts.isSourceFile(result)) {
+        throw new Error("AST transform produced a non-SourceFile node");
+      }
+      return result;
+    };
+  };
+}
+
+const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+
+function transformEntryGenerics(source: string, filePath: string): string {
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
   const entryNames = collectEntryBindings(sourceFile, filePath);
+
   if (entryNames.size === 0) return source;
 
-  const replacements: Array<{ start: number; end: number; text: string }> = [];
-
-  function visit(node: ts.Node) {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      entryNames.has(node.expression.text) &&
-      node.typeArguments?.length === 1 &&
-      node.arguments.length >= 1
-    ) {
-      const calleeName = node.expression.text;
-      const contractStr = node.typeArguments[0]!.getText(sourceFile);
-
-      // Rebuild args, preserving originals and injecting contract
-      const argTexts = node.arguments.map((a) => a.getText(sourceFile));
-
-      let optionsArg: string;
-      if (argTexts.length >= 2) {
-        optionsArg = `{ ...${argTexts[1]}, contract: ${JSON.stringify(contractStr)} }`;
-      } else {
-        optionsArg = `{ contract: ${JSON.stringify(contractStr)} }`;
-      }
-
-      const allArgs = [argTexts[0], optionsArg, ...argTexts.slice(2)].join(", ");
-      const newCall = `${calleeName}(${allArgs})`;
-
-      replacements.push({
-        start: node.getStart(sourceFile),
-        end: node.getEnd(),
-        text: newCall,
-      });
-    }
-
-    ts.forEachChild(node, visit);
+  const result = ts.transform(sourceFile, [createTransformer(entryNames, sourceFile)]);
+  const transformedFile = result.transformed[0];
+  if (!transformedFile) {
+    throw new Error("Transform produced no output");
   }
 
-  visit(sourceFile);
+  const printed = printer.printFile(transformedFile);
+  result.dispose();
+  return printed;
+}
 
-  if (replacements.length === 0) return source;
+function inferLoader(filePath: string): "ts" | "tsx" {
+  return filePath.endsWith(".tsx") ? "tsx" : "ts";
+}
 
-  let result = source;
-  for (const r of replacements.sort((a, b) => b.start - a.start)) {
-    result = result.slice(0, r.start) + r.text + result.slice(r.end);
+function handleLoad(filePath: string) {
+  const source = readFileSync(filePath, "utf-8");
+  const loader = inferLoader(filePath);
+
+  if (shouldSkipTransform(filePath)) {
+    return { contents: source, loader };
   }
 
-  return result;
+  return {
+    contents: transformEntryGenerics(source, filePath),
+    loader,
+  };
 }
 
 plugin({
-  name: "anythingandeverything",
+  name: packageName,
   setup(build) {
-    build.onLoad({ filter: /\.tsx?$/ }, (args) => {
-      const loader: "tsx" | "ts" = args.path.endsWith(".tsx") ? "tsx" : "ts";
-      const text = readFileSync(args.path, "utf-8");
-
-      // Skip our own package source and anything in node_modules
-      if (args.path.startsWith(packageSrcDir) || args.path === packageEntrypoint || args.path.includes("/node_modules/")) {
-        return { contents: text, loader };
-      }
-
-      return {
-        contents: transformEntryGenerics(text, args.path),
-        loader,
-      };
-    });
+    build.onLoad({ filter: /\.tsx?$/ }, (args) => handleLoad(args.path));
   },
 });

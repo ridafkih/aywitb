@@ -10,38 +10,29 @@ export interface AgentResult {
   files: Record<string, string>;
 }
 
-const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
-const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
-const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
-const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
-const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + dim(`… (${s.length - max} more chars)`);
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + `... (${text.length - max} more chars)`;
 }
 
-// -- Type guards for tool call/result shapes --
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function getString(obj: Record<string, unknown>, key: string): string | undefined {
-  const v = obj[key];
-  return typeof v === "string" ? v : undefined;
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }
 
-function getBoolean(obj: Record<string, unknown>, key: string): boolean | undefined {
-  const v = obj[key];
-  return typeof v === "boolean" ? v : undefined;
+function getBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
-function getStringArray(obj: Record<string, unknown>, key: string): string[] | undefined {
-  const v = obj[key];
-  if (!Array.isArray(v)) return undefined;
-  return v.every((el): el is string => typeof el === "string") ? v : undefined;
+function getStringArray(record: Record<string, unknown>, key: string): string[] | undefined {
+  const value = record[key];
+  if (!Array.isArray(value)) return undefined;
+  return value.every((element): element is string => typeof element === "string") ? value : undefined;
 }
 
 interface ToolCallShape {
@@ -50,12 +41,11 @@ interface ToolCallShape {
   input: Record<string, unknown>;
 }
 
-function isToolCall(v: unknown): v is ToolCallShape {
-  if (!isRecord(v)) return false;
-  if (typeof v.toolName !== "string") return false;
-  if (typeof v.toolCallId !== "string") return false;
-  // input may be absent for zero-arg tools
-  if (v.input !== undefined && !isRecord(v.input)) return false;
+function isToolCall(value: unknown): value is ToolCallShape {
+  if (!isRecord(value)) return false;
+  if (typeof value.toolName !== "string") return false;
+  if (typeof value.toolCallId !== "string") return false;
+  if (value.input !== undefined && !isRecord(value.input)) return false;
   return true;
 }
 
@@ -64,80 +54,84 @@ interface ToolResultShape {
   output: unknown;
 }
 
-function isToolResult(v: unknown): v is ToolResultShape {
-  if (!isRecord(v)) return false;
-  if (typeof v.toolCallId !== "string") return false;
-  return "output" in v;
+function isToolResult(value: unknown): value is ToolResultShape {
+  if (!isRecord(value)) return false;
+  if (typeof value.toolCallId !== "string") return false;
+  return "output" in value;
 }
 
-// -- Formatting --
+function requireString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string") {
+    throw new Error(`Expected string for "${key}", got ${typeof value}`);
+  }
+  return value;
+}
 
-function formatToolCall(name: string, input: Record<string, unknown>): string {
+function describeToolCall(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case "writeFile":
-      return `${cyan("writeFile")} ${dim("→")} ${input.path ?? "?"}`;
+      return `writeFile ${requireString(input, "path")}`;
     case "readFile":
-      return `${cyan("readFile")} ${dim("→")} ${input.path ?? "?"}`;
+      return `readFile ${requireString(input, "path")}`;
     case "listFiles":
-      return cyan("listFiles");
+      return "listFiles";
     case "execute":
-      return `${cyan("execute")} ${dim("→")} ${dim(String(input.command ?? ""))}`;
+      return `execute: ${requireString(input, "command")}`;
     case "runTests":
-      return `${cyan("runTests")}${input.testFile ? ` ${dim("→")} ${input.testFile}` : ""}`;
+      return `runTests${input.testFile ? ` ${input.testFile}` : ""}`;
     case "typeCheck":
-      return cyan("typeCheck");
+      return "typeCheck";
     case "format":
-      return `${cyan("format")} ${dim("→")} ${input.path ?? "?"}`;
+      return `format ${requireString(input, "path")}`;
     default:
-      return `${cyan(name)} ${dim(JSON.stringify(input))}`;
+      return `${name} ${JSON.stringify(input)}`;
   }
 }
 
-function formatToolResult(name: string, output: unknown): string | null {
-  if (!isRecord(output)) return dim(truncate(JSON.stringify(output), 200));
+function describeToolResult(name: string, output: unknown): string | null {
+  if (!isRecord(output)) return truncate(JSON.stringify(output), 200);
 
   switch (name) {
     case "writeFile":
       return null;
     case "readFile": {
-      const err = getString(output, "error");
-      if (err) return red(err);
+      const error = getString(output, "error");
+      if (error) return error;
       const content = getString(output, "content");
-      if (content) return dim(truncate(content, 200));
+      if (content) return truncate(content, 200);
       return null;
     }
     case "listFiles": {
       const files = getStringArray(output, "files");
-      if (files) return dim(files.join(", "));
+      if (files) return files.join(", ");
       return null;
     }
     case "execute": {
       const parts: string[] = [];
       if (output.stdout) parts.push(truncate(String(output.stdout).trim(), 300));
-      if (output.stderr) parts.push(red(truncate(String(output.stderr).trim(), 200)));
-      if (output.exitCode !== 0) parts.push(red(`exit ${output.exitCode}`));
+      if (output.stderr) parts.push(truncate(String(output.stderr).trim(), 200));
+      if (output.exitCode !== 0) parts.push(`exit ${output.exitCode}`);
       return parts.join("\n") || null;
     }
     case "runTests": {
       const passed = getBoolean(output, "passed");
       if (passed === undefined) return null;
-      const icon = passed ? green("pass") : red("fail");
-      const parts = [icon];
+      if (passed) return "passed";
       const text = (String(output.stdout ?? "") + String(output.stderr ?? "")).trim();
-      if (text && !passed) parts.push(dim(truncate(text, 400)));
-      return parts.join("\n");
+      return text ? `failed\n${truncate(text, 400)}` : "failed";
     }
     case "typeCheck": {
       const passed = getBoolean(output, "passed");
       if (passed === undefined) return null;
-      if (passed) return green("pass");
-      return red("fail\n") + dim(truncate(String(output.diagnostics ?? "").trim(), 400));
+      if (passed) return "passed";
+      return `failed\n${truncate(String(output.diagnostics ?? "").trim(), 400)}`;
     }
     case "format":
       if (output.formatted) return null;
-      return red(String(output.error ?? "unknown error"));
+      return String(output.error ?? "unknown error");
     default:
-      return dim(truncate(JSON.stringify(output), 200));
+      return truncate(JSON.stringify(output), 200);
   }
 }
 
@@ -147,13 +141,20 @@ function getModelId(model: unknown): string {
   return "custom";
 }
 
+function log(depth: number, message: string) {
+  const indent = "\t".repeat(depth);
+  for (const line of message.split("\n")) {
+    console.log(`${indent}${line}`);
+  }
+}
+
 export async function runAgent(
   description: string,
   options?: EntryOptions,
 ): Promise<AgentResult> {
   const workspace = await createWorkspace();
   const systemPrompt = loadSystemPrompt();
-  const model = options?.model ?? anthropic("claude-sonnet-4-20250514");
+  const model = options?.model ?? anthropic("claude-sonnet-4-6");
   const verbose = options?.verbose ?? false;
 
   const userPrompt = options?.contract
@@ -161,14 +162,44 @@ export async function runAgent(
     : description;
 
   if (verbose) {
-    console.log(bold("\n▸ generating program"));
-    console.log(dim(`  workspace: ${workspace.dir}`));
-    console.log(dim(`  model: ${getModelId(model)}`));
-    if (options?.contract) console.log(dim(`  contract: ${options.contract}`));
-    console.log();
+    log(0, "generating program");
+    log(1, `workspace: ${workspace.dir}`);
+    log(1, `model: ${getModelId(model)}`);
+    if (options?.contract) log(1, `contract: ${options.contract}`);
   }
 
-  let stepNum = 0;
+  let stepNumber = 0;
+
+  function onStepFinish(event: { text?: string; toolCalls?: unknown[]; toolResults?: unknown[] }) {
+    if (!verbose) return;
+
+    stepNumber++;
+    log(1, `step ${stepNumber}`);
+
+    if (event.text) {
+      log(2, truncate(event.text.trim(), 300));
+    }
+
+    const toolCalls = event.toolCalls ?? [];
+    const toolResults = event.toolResults ?? [];
+
+    for (const rawCall of toolCalls) {
+      if (!isToolCall(rawCall)) continue;
+      const input = rawCall.input ?? {};
+
+      log(2, describeToolCall(rawCall.toolName, input));
+
+      const matchingResult = toolResults.find(
+        (result) => isToolResult(result) && result.toolCallId === rawCall.toolCallId,
+      );
+      if (matchingResult && isToolResult(matchingResult)) {
+        const description = describeToolResult(rawCall.toolName, matchingResult.output);
+        if (description) {
+          log(3, description);
+        }
+      }
+    }
+  }
 
   const { steps } = await generateText({
     model,
@@ -176,51 +207,17 @@ export async function runAgent(
     prompt: userPrompt,
     tools: buildTools(workspace),
     stopWhen: stepCountIs(50),
-    onStepFinish: verbose
-      ? (event) => {
-          stepNum++;
-          console.log(dim(`── step ${stepNum} ──`));
-
-          if (event.text) {
-            console.log(yellow("  thinking: ") + dim(truncate(event.text.trim(), 300)));
-          }
-
-          const calls = event.toolCalls ?? [];
-          const results = event.toolResults ?? [];
-
-          for (const rawCall of calls) {
-            if (!isToolCall(rawCall)) continue;
-            const input = rawCall.input ?? {};
-
-            console.log(`  ${formatToolCall(rawCall.toolName, input)}`);
-
-            const matchingResult = results.find(
-              (r) => isToolResult(r) && r.toolCallId === rawCall.toolCallId,
-            );
-            if (matchingResult && isToolResult(matchingResult)) {
-              const formatted = formatToolResult(rawCall.toolName, matchingResult.output);
-              if (formatted) {
-                for (const line of formatted.split("\n")) {
-                  console.log(`    ${line}`);
-                }
-              }
-            }
-          }
-          console.log();
-        }
-      : undefined,
+    onStepFinish,
   });
 
   const files = await workspace.getAllFiles();
   const entrypoint = workspace.getEntrypoint();
 
   if (verbose) {
-    const fileNames = Object.keys(files);
-    console.log(bold(`▸ done`) + dim(` — ${steps.length} steps, ${fileNames.length} files`));
-    for (const f of fileNames) {
-      console.log(dim(`  ${f}`));
+    log(1, `done: ${steps.length} steps, ${Object.keys(files).length} files`);
+    for (const fileName of Object.keys(files)) {
+      log(2, fileName);
     }
-    console.log();
   }
 
   return { entrypoint, files };
