@@ -6,4 +6,4 @@ await entry(`
   it should support headings, bold, italic, links,
   code blocks, and unordered lists
   print the HTML to stdout
-`);
+`, { verbose: true });

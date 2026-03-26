@@ -8,4 +8,4 @@ await entry(`
   - PATCH /todos/:id to toggle a todo's completed status
   - DELETE /todos/:id to remove a todo
   store todos in memory
-`);
+`, { verbose: true });

@@ -5,4 +5,4 @@ await entry(`
   it should let users join a room using a url
   any messages shared with the server are sent to all
   clients in the room
-`);
+`, { verbose: true });
