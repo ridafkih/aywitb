@@ -6,10 +6,9 @@ type WebSocketServer = {
 }
 
 const server = await aywitb<WebSocketServer>(`
-  a websocket library that is hosted at the provided port
-  it should let users join a room using a url /room/{string[6]}
-  any messages shared with the server are sent to all
-  clients in the room, rooms are upserted on join
+  a websocket server that works with url-based rooms
+  join by connecting to ws://.../room/{string[6]}
+  rooms are upserted and messages fan to all clients in the room
 `, { verbose: true });
 
 server.on("verbose-log", console.log);
