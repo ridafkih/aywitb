@@ -18,10 +18,14 @@ export async function runAgent(
   const systemPrompt = loadSystemPrompt();
   const model = options?.model ?? anthropic("claude-sonnet-4-20250514");
 
+  const userPrompt = options?.contract
+    ? `${description}\n\nThe entrypoint (index.ts) MUST export a default value matching this TypeScript type:\n\`\`\`ts\nexport default <implementation> satisfies ${options.contract}\n\`\`\`\nDo NOT run the code as a program. Export it as a library.`
+    : description;
+
   const { steps } = await generateText({
     model,
     system: systemPrompt,
-    prompt: description,
+    prompt: userPrompt,
     tools: buildTools(workspace),
     stopWhen: stepCountIs(50),
     onStepFinish: options?.verbose

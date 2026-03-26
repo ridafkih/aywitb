@@ -4,4 +4,5 @@ export interface EntryOptions {
   model?: LanguageModel;
   cache?: boolean;
   verbose?: boolean;
+  contract?: string;
 }
