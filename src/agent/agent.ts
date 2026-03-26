@@ -22,62 +22,129 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max) + dim(`… (${s.length - max} more chars)`);
 }
 
-function formatToolCall(call: { toolName: string; args: Record<string, unknown> }): string {
-  switch (call.toolName) {
+// -- Type guards for tool call/result shapes --
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function getString(obj: Record<string, unknown>, key: string): string | undefined {
+  const v = obj[key];
+  return typeof v === "string" ? v : undefined;
+}
+
+function getBoolean(obj: Record<string, unknown>, key: string): boolean | undefined {
+  const v = obj[key];
+  return typeof v === "boolean" ? v : undefined;
+}
+
+function getStringArray(obj: Record<string, unknown>, key: string): string[] | undefined {
+  const v = obj[key];
+  if (!Array.isArray(v)) return undefined;
+  return v.every((el): el is string => typeof el === "string") ? v : undefined;
+}
+
+interface ToolCallShape {
+  toolName: string;
+  toolCallId: string;
+  input: Record<string, unknown>;
+}
+
+function isToolCall(v: unknown): v is ToolCallShape {
+  if (!isRecord(v)) return false;
+  if (typeof v.toolName !== "string") return false;
+  if (typeof v.toolCallId !== "string") return false;
+  // input may be absent for zero-arg tools
+  if (v.input !== undefined && !isRecord(v.input)) return false;
+  return true;
+}
+
+interface ToolResultShape {
+  toolCallId: string;
+  output: unknown;
+}
+
+function isToolResult(v: unknown): v is ToolResultShape {
+  if (!isRecord(v)) return false;
+  if (typeof v.toolCallId !== "string") return false;
+  return "output" in v;
+}
+
+// -- Formatting --
+
+function formatToolCall(name: string, input: Record<string, unknown>): string {
+  switch (name) {
     case "writeFile":
-      return `${cyan("writeFile")} ${dim("→")} ${call.args.path}`;
+      return `${cyan("writeFile")} ${dim("→")} ${input.path ?? "?"}`;
     case "readFile":
-      return `${cyan("readFile")} ${dim("→")} ${call.args.path}`;
+      return `${cyan("readFile")} ${dim("→")} ${input.path ?? "?"}`;
     case "listFiles":
       return cyan("listFiles");
     case "execute":
-      return `${cyan("execute")} ${dim("→")} ${dim(String(call.args.command))}`;
+      return `${cyan("execute")} ${dim("→")} ${dim(String(input.command ?? ""))}`;
     case "runTests":
-      return `${cyan("runTests")}${call.args.testFile ? ` ${dim("→")} ${call.args.testFile}` : ""}`;
+      return `${cyan("runTests")}${input.testFile ? ` ${dim("→")} ${input.testFile}` : ""}`;
     case "typeCheck":
       return cyan("typeCheck");
     case "format":
-      return `${cyan("format")} ${dim("→")} ${call.args.path}`;
+      return `${cyan("format")} ${dim("→")} ${input.path ?? "?"}`;
     default:
-      return `${cyan(call.toolName)} ${dim(JSON.stringify(call.args))}`;
+      return `${cyan(name)} ${dim(JSON.stringify(input))}`;
   }
 }
 
-function formatToolResult(call: { toolName: string }, result: unknown): string | null {
-  const r = result as Record<string, unknown>;
-  switch (call.toolName) {
+function formatToolResult(name: string, output: unknown): string | null {
+  if (!isRecord(output)) return dim(truncate(JSON.stringify(output), 200));
+
+  switch (name) {
     case "writeFile":
       return null;
-    case "readFile":
-      if (r.error) return red(String(r.error));
-      return dim(truncate(String(r.content), 200));
-    case "listFiles":
-      return dim((r.files as string[]).join(", "));
+    case "readFile": {
+      const err = getString(output, "error");
+      if (err) return red(err);
+      const content = getString(output, "content");
+      if (content) return dim(truncate(content, 200));
+      return null;
+    }
+    case "listFiles": {
+      const files = getStringArray(output, "files");
+      if (files) return dim(files.join(", "));
+      return null;
+    }
     case "execute": {
       const parts: string[] = [];
-      if (r.stdout) parts.push(truncate(String(r.stdout).trim(), 300));
-      if (r.stderr) parts.push(red(truncate(String(r.stderr).trim(), 200)));
-      if (r.exitCode !== 0) parts.push(red(`exit ${r.exitCode}`));
+      if (output.stdout) parts.push(truncate(String(output.stdout).trim(), 300));
+      if (output.stderr) parts.push(red(truncate(String(output.stderr).trim(), 200)));
+      if (output.exitCode !== 0) parts.push(red(`exit ${output.exitCode}`));
       return parts.join("\n") || null;
     }
     case "runTests": {
-      const passed = r.passed as boolean;
+      const passed = getBoolean(output, "passed");
+      if (passed === undefined) return null;
       const icon = passed ? green("pass") : red("fail");
       const parts = [icon];
-      const output = (String(r.stdout || "") + String(r.stderr || "")).trim();
-      if (output && !passed) parts.push(dim(truncate(output, 400)));
+      const text = (String(output.stdout ?? "") + String(output.stderr ?? "")).trim();
+      if (text && !passed) parts.push(dim(truncate(text, 400)));
       return parts.join("\n");
     }
     case "typeCheck": {
-      const passed = r.passed as boolean;
+      const passed = getBoolean(output, "passed");
+      if (passed === undefined) return null;
       if (passed) return green("pass");
-      return red("fail\n") + dim(truncate(String(r.diagnostics).trim(), 400));
+      return red("fail\n") + dim(truncate(String(output.diagnostics ?? "").trim(), 400));
     }
     case "format":
-      return r.formatted ? null : red(String(r.error));
+      if (output.formatted) return null;
+      return red(String(output.error ?? "unknown error"));
     default:
-      return dim(truncate(JSON.stringify(result), 200));
+      return dim(truncate(JSON.stringify(output), 200));
   }
+}
+
+function getModelId(model: unknown): string {
+  if (typeof model === "string") return model;
+  if (isRecord(model) && typeof model.modelId === "string") return model.modelId;
+  return "custom";
 }
 
 export async function runAgent(
@@ -96,7 +163,7 @@ export async function runAgent(
   if (verbose) {
     console.log(bold("\n▸ generating program"));
     console.log(dim(`  workspace: ${workspace.dir}`));
-    console.log(dim(`  model: ${typeof model === "string" ? model : "modelId" in model ? (model as { modelId: string }).modelId : "custom"}`));
+    console.log(dim(`  model: ${getModelId(model)}`));
     if (options?.contract) console.log(dim(`  contract: ${options.contract}`));
     console.log();
   }
@@ -121,18 +188,17 @@ export async function runAgent(
           const calls = event.toolCalls ?? [];
           const results = event.toolResults ?? [];
 
-          for (let i = 0; i < calls.length; i++) {
-            const call = calls[i] as unknown as { toolName: string; toolCallId: string; input: Record<string, unknown> };
-            console.log(`  ${formatToolCall({ toolName: call.toolName, args: call.input ?? {} })}`);
+          for (const rawCall of calls) {
+            if (!isToolCall(rawCall)) continue;
+            const input = rawCall.input ?? {};
+
+            console.log(`  ${formatToolCall(rawCall.toolName, input)}`);
 
             const matchingResult = results.find(
-              (r: unknown) => {
-                const tr = r as { toolCallId?: string };
-                return "toolCallId" in tr && tr.toolCallId === call.toolCallId;
-              },
-            ) as unknown as { output: unknown } | undefined;
-            if (matchingResult) {
-              const formatted = formatToolResult(call, matchingResult.output);
+              (r) => isToolResult(r) && r.toolCallId === rawCall.toolCallId,
+            );
+            if (matchingResult && isToolResult(matchingResult)) {
+              const formatted = formatToolResult(rawCall.toolName, matchingResult.output);
               if (formatted) {
                 for (const line of formatted.split("\n")) {
                   console.log(`    ${line}`);

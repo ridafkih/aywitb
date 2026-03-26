@@ -1,7 +1,76 @@
 import { plugin } from "bun";
 import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import ts from "typescript";
 
+/**
+ * Resolves the real directories of the anythingandeverything package source
+ * so we can skip transforming our own source files without hardcoded paths.
+ */
+const packageSrcDir = resolve(dirname(new URL(import.meta.url).pathname));
+const packageEntrypoint = resolve(packageSrcDir, "..", "index.ts");
+
+/**
+ * Determines whether an import specifier resolves to our package.
+ * Handles bare specifiers ("anythingandeverything") and relative
+ * paths ("../index.ts") by resolving against the importing file.
+ */
+function isOurPackageImport(specifier: string, importingFile: string): boolean {
+  // Bare specifier match
+  if (specifier === "anythingandeverything") return true;
+
+  // Relative/absolute path — resolve and check if it lands inside our package
+  if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    const resolved = resolve(dirname(importingFile), specifier);
+    return resolved.startsWith(packageSrcDir) || resolved === packageEntrypoint;
+  }
+
+  return false;
+}
+
+/**
+ * Collect the local names that `entry` is imported as from our package.
+ * Handles: import { entry }, import { entry as foo }, etc.
+ * Uses real path resolution rather than string matching on specifiers.
+ */
+function collectEntryBindings(sourceFile: ts.SourceFile, filePath: string): Set<string> {
+  const bindings = new Set<string>();
+
+  for (const stmt of sourceFile.statements) {
+    if (!ts.isImportDeclaration(stmt)) continue;
+    const specifier = stmt.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier)) continue;
+
+    if (!isOurPackageImport(specifier.text, filePath)) continue;
+
+    const clause = stmt.importClause;
+    if (!clause) continue;
+
+    // import entry from "..." (default import)
+    if (clause.name?.text === "entry") {
+      bindings.add("entry");
+    }
+
+    // import { entry } or import { entry as foo }
+    const named = clause.namedBindings;
+    if (named && ts.isNamedImports(named)) {
+      for (const el of named.elements) {
+        const imported = (el.propertyName ?? el.name).text;
+        if (imported === "entry") {
+          bindings.add(el.name.text);
+        }
+      }
+    }
+  }
+
+  return bindings;
+}
+
+/**
+ * Walks the AST and rewrites `entry<T>(desc, opts?)` calls to inject
+ * `{ contract: "T" }` — but only for identifiers that actually resolve
+ * to our package's `entry` export.
+ */
 function transformEntryGenerics(source: string, filePath: string): string {
   const sourceFile = ts.createSourceFile(
     filePath,
@@ -10,30 +79,34 @@ function transformEntryGenerics(source: string, filePath: string): string {
     true,
   );
 
+  const entryNames = collectEntryBindings(sourceFile, filePath);
+  if (entryNames.size === 0) return source;
+
   const replacements: Array<{ start: number; end: number; text: string }> = [];
 
   function visit(node: ts.Node) {
     if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
-      node.expression.text === "entry" &&
-      node.typeArguments?.length === 1
+      entryNames.has(node.expression.text) &&
+      node.typeArguments?.length === 1 &&
+      node.arguments.length >= 1
     ) {
-      const typeArg = node.typeArguments[0]!;
-      const contractStr = typeArg.getText(sourceFile);
+      const calleeName = node.expression.text;
+      const contractStr = node.typeArguments[0]!.getText(sourceFile);
 
-      const args = node.arguments;
-      if (args.length === 0) return;
+      // Rebuild args, preserving originals and injecting contract
+      const argTexts = node.arguments.map((a) => a.getText(sourceFile));
 
-      const descriptionArg = args[0]!.getText(sourceFile);
-
-      let newCall: string;
-      if (args.length >= 2) {
-        const existingOpts = args[1]!.getText(sourceFile);
-        newCall = `entry(${descriptionArg}, { ...${existingOpts}, contract: ${JSON.stringify(contractStr)} })`;
+      let optionsArg: string;
+      if (argTexts.length >= 2) {
+        optionsArg = `{ ...${argTexts[1]}, contract: ${JSON.stringify(contractStr)} }`;
       } else {
-        newCall = `entry(${descriptionArg}, { contract: ${JSON.stringify(contractStr)} })`;
+        optionsArg = `{ contract: ${JSON.stringify(contractStr)} }`;
       }
+
+      const allArgs = [argTexts[0], optionsArg, ...argTexts.slice(2)].join(", ");
+      const newCall = `${calleeName}(${allArgs})`;
 
       replacements.push({
         start: node.getStart(sourceFile),
@@ -61,18 +134,16 @@ plugin({
   name: "anythingandeverything",
   setup(build) {
     build.onLoad({ filter: /\.tsx?$/ }, (args) => {
+      const loader: "tsx" | "ts" = args.path.endsWith(".tsx") ? "tsx" : "ts";
       const text = readFileSync(args.path, "utf-8");
-      const loader = (args.path.endsWith(".tsx") ? "tsx" : "ts") as "tsx" | "ts";
 
-      // Only transform user files that contain entry<
-      const shouldTransform =
-        !args.path.includes("/node_modules/") &&
-        !args.path.includes("/anythingandeverything/src/") &&
-        !args.path.endsWith("/anythingandeverything/index.ts") &&
-        (text.includes("entry<") || text.includes("entry <"));
+      // Skip our own package source and anything in node_modules
+      if (args.path.startsWith(packageSrcDir) || args.path === packageEntrypoint || args.path.includes("/node_modules/")) {
+        return { contents: text, loader };
+      }
 
       return {
-        contents: shouldTransform ? transformEntryGenerics(text, args.path) : text,
+        contents: transformEntryGenerics(text, args.path),
         loader,
       };
     });

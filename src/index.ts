@@ -23,10 +23,19 @@ interface ProgramRecord {
   files: string | Record<string, string>;
 }
 
+function isStringRecord(v: unknown): v is Record<string, string> {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  return Object.values(v).every((val) => typeof val === "string");
+}
+
 function resolveFiles(program: ProgramRecord): Record<string, string> {
-  return typeof program.files === "string"
-    ? (JSON.parse(program.files) as Record<string, string>)
-    : program.files;
+  if (typeof program.files !== "string") return program.files;
+
+  const parsed: unknown = JSON.parse(program.files);
+  if (!isStringRecord(parsed)) {
+    throw new Error("Cached program has malformed files field — expected Record<string, string>");
+  }
+  return parsed;
 }
 
 async function writeToWorkspace(files: Record<string, string>) {
@@ -50,12 +59,15 @@ async function runProgram(program: ProgramRecord): Promise<void> {
   await proc.exited;
 }
 
-async function importProgram<T>(program: ProgramRecord): Promise<T> {
+async function importProgram(program: ProgramRecord): Promise<unknown> {
   const files = resolveFiles(program);
   const workspace = await writeToWorkspace(files);
 
-  const mod = await import(join(workspace.dir, program.entrypoint));
-  return mod.default as T;
+  const mod: unknown = await import(join(workspace.dir, program.entrypoint));
+  if (typeof mod !== "object" || mod === null || !("default" in mod)) {
+    throw new Error("Generated module does not have a default export");
+  }
+  return mod.default;
 }
 
 export async function entry<T = void>(
@@ -76,8 +88,9 @@ export async function entry<T = void>(
 
     if (cached.length > 0) {
       if (options?.verbose) console.log(`\x1b[32m▸ cache hit\x1b[0m \x1b[2m(${hash.slice(0, 8)})\x1b[0m`);
-      if (contract) return importProgram<T>(cached[0]!);
+      if (contract) return importProgram(cached[0]!) as Promise<T>;
       await runProgram(cached[0]!);
+      // T defaults to void when no contract is provided
       return undefined as T;
     }
   }
@@ -96,7 +109,7 @@ export async function entry<T = void>(
     })
     .run();
 
-  if (contract) return importProgram<T>(result);
+  if (contract) return importProgram(result) as Promise<T>;
   await runProgram(result);
   return undefined as T;
 }
