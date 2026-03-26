@@ -1,15 +1,14 @@
 # anythingandeverything
 
-To install dependencies:
+This is the anything library, it does anything.
 
-```bash
-bun install
-```
+```ts
+import { entry } from "anythingandeverything";
 
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.10. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+await entry(`
+  a websocket library that is hosted on port 3000
+  it should let users join a room using a url
+  any messages shared with the server are sent to all
+  clients in the room
+`);
+````
