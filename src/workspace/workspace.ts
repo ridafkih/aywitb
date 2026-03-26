@@ -50,6 +50,7 @@ export async function createWorkspace(): Promise<Workspace> {
       const glob = new Bun.Glob("**/*.{ts,tsx,js,jsx,json,css,html,md}");
       const files: Record<string, string> = {};
       for await (const path of glob.scan({ cwd: dir })) {
+        if (path.includes("node_modules/")) continue;
         files[path] = await Bun.file(join(dir, path)).text();
       }
       return files;

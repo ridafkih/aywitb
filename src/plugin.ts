@@ -1,4 +1,5 @@
 import { plugin } from "bun";
+import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 function transformEntryGenerics(source: string, filePath: string): string {
@@ -9,7 +10,6 @@ function transformEntryGenerics(source: string, filePath: string): string {
     true,
   );
 
-  // Collect replacements in reverse order so offsets don't shift
   const replacements: Array<{ start: number; end: number; text: string }> = [];
 
   function visit(node: ts.Node) {
@@ -22,7 +22,6 @@ function transformEntryGenerics(source: string, filePath: string): string {
       const typeArg = node.typeArguments[0]!;
       const contractStr = typeArg.getText(sourceFile);
 
-      // Build the new arguments: inject or merge contract into options
       const args = node.arguments;
       if (args.length === 0) return;
 
@@ -30,7 +29,6 @@ function transformEntryGenerics(source: string, filePath: string): string {
 
       let newCall: string;
       if (args.length >= 2) {
-        // Merge contract into existing options object
         const existingOpts = args[1]!.getText(sourceFile);
         newCall = `entry(${descriptionArg}, { ...${existingOpts}, contract: ${JSON.stringify(contractStr)} })`;
       } else {
@@ -51,7 +49,6 @@ function transformEntryGenerics(source: string, filePath: string): string {
 
   if (replacements.length === 0) return source;
 
-  // Apply replacements in reverse order
   let result = source;
   for (const r of replacements.sort((a, b) => b.start - a.start)) {
     result = result.slice(0, r.start) + r.text + result.slice(r.end);
@@ -60,24 +57,23 @@ function transformEntryGenerics(source: string, filePath: string): string {
   return result;
 }
 
-export default plugin({
+plugin({
   name: "anythingandeverything",
   setup(build) {
-    build.onLoad({ filter: /\.tsx?$/ }, async (args) => {
-      // Don't transform our own source files
-      if (args.path.includes("anythingandeverything/src/")) return;
+    build.onLoad({ filter: /\.tsx?$/ }, (args) => {
+      const text = readFileSync(args.path, "utf-8");
+      const loader = (args.path.endsWith(".tsx") ? "tsx" : "ts") as "tsx" | "ts";
 
-      const source = await Bun.file(args.path).text();
-
-      // Quick bail: skip files that don't reference entry with a generic
-      if (!source.includes("entry<") && !source.includes("entry <")) return;
-
-      const transformed = transformEntryGenerics(source, args.path);
-      if (transformed === source) return;
+      // Only transform user files that contain entry<
+      const shouldTransform =
+        !args.path.includes("/node_modules/") &&
+        !args.path.includes("/anythingandeverything/src/") &&
+        !args.path.endsWith("/anythingandeverything/index.ts") &&
+        (text.includes("entry<") || text.includes("entry <"));
 
       return {
-        contents: transformed,
-        loader: args.path.endsWith(".tsx") ? "tsx" : "ts",
+        contents: shouldTransform ? transformEntryGenerics(text, args.path) : text,
+        loader,
       };
     });
   },

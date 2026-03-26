@@ -75,14 +75,14 @@ export async function entry<T = void>(
       .all();
 
     if (cached.length > 0) {
-      if (options?.verbose) console.log("[entry] cache hit");
+      if (options?.verbose) console.log(`\x1b[32m▸ cache hit\x1b[0m \x1b[2m(${hash.slice(0, 8)})\x1b[0m`);
       if (contract) return importProgram<T>(cached[0]!);
       await runProgram(cached[0]!);
       return undefined as T;
     }
   }
 
-  if (options?.verbose) console.log("[entry] cache miss, generating...");
+  if (options?.verbose) console.log(`\x1b[33m▸ cache miss\x1b[0m \x1b[2m(${hash.slice(0, 8)}), generating...\x1b[0m`);
 
   const result = await runAgent(description, options);
 
