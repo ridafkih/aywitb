@@ -97,6 +97,17 @@ function isEntryCallWithGeneric(
   return true;
 }
 
+function resolveTypeToString(typeNode: ts.TypeNode, checker: ts.TypeChecker): string {
+  const type = checker.getTypeFromTypeNode(typeNode);
+  return checker.typeToString(
+    type,
+    undefined,
+    ts.TypeFormatFlags.NoTruncation
+      | ts.TypeFormatFlags.WriteArrowStyleSignature
+      | ts.TypeFormatFlags.InTypeAlias,
+  );
+}
+
 function buildContractProperty(contractText: string): ts.PropertyAssignment {
   return ts.factory.createPropertyAssignment(
     ts.factory.createIdentifier("contract"),
@@ -122,14 +133,14 @@ function buildOptionsArgument(
 
 function buildReplacementNode(
   node: ts.CallExpression & { expression: ts.Identifier; typeArguments: ts.NodeArray<ts.TypeNode> },
-  sourceFile: ts.SourceFile,
+  checker: ts.TypeChecker,
 ): ts.CallExpression {
   const typeArgument = node.typeArguments[0];
   if (!typeArgument) {
     throw new Error("Expected type argument in entry call — predicate should have guaranteed this");
   }
 
-  const contractText = typeArgument.getText(sourceFile);
+  const contractText = resolveTypeToString(typeArgument, checker);
   const descriptionArgument = node.arguments[0];
   if (!descriptionArgument) {
     throw new Error("Expected description argument in entry call — predicate should have guaranteed this");
@@ -141,19 +152,19 @@ function buildReplacementNode(
 
   return ts.factory.createCallExpression(
     node.expression,
-    undefined, // strip type arguments — they're erased at runtime anyway
+    undefined,
     [descriptionArgument, optionsArgument, ...remainingArguments],
   );
 }
 
 function createTransformer(
   entryNames: Set<string>,
-  sourceFile: ts.SourceFile,
+  checker: ts.TypeChecker,
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context) => {
     function visitor(node: ts.Node): ts.Node {
       if (isEntryCallWithGeneric(node, entryNames)) {
-        return buildReplacementNode(node, sourceFile);
+        return buildReplacementNode(node, checker);
       }
       return ts.visitEachChild(node, visitor, context);
     }
@@ -168,22 +179,50 @@ function createTransformer(
   };
 }
 
+function createProgramForFile(filePath: string): ts.Program {
+  const configPath = ts.findConfigFile(dirname(filePath), ts.sys.fileExists, "tsconfig.json");
+  if (configPath) {
+    const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, dirname(configPath));
+    return ts.createProgram({
+      rootNames: [...parsed.fileNames, filePath],
+      options: parsed.options,
+    });
+  }
+
+  return ts.createProgram({
+    rootNames: [filePath],
+    options: {
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      strict: true,
+      skipLibCheck: true,
+    },
+  });
+}
+
 const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
 
-function transformEntryGenerics(source: string, filePath: string): string {
-  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+function transformEntryGenerics(filePath: string): string | null {
+  const program = createProgramForFile(filePath);
+  const sourceFile = program.getSourceFile(filePath);
+  if (!sourceFile) {
+    throw new Error(`Program could not locate source file: ${filePath}`);
+  }
+
   const entryNames = collectEntryBindings(sourceFile, filePath);
+  if (entryNames.size === 0) return null;
 
-  if (entryNames.size === 0) return source;
-
-  const result = ts.transform(sourceFile, [createTransformer(entryNames, sourceFile)]);
-  const transformedFile = result.transformed[0];
+  const checker = program.getTypeChecker();
+  const transformResult = ts.transform(sourceFile, [createTransformer(entryNames, checker)]);
+  const transformedFile = transformResult.transformed[0];
   if (!transformedFile) {
     throw new Error("Transform produced no output");
   }
 
   const printed = printer.printFile(transformedFile);
-  result.dispose();
+  transformResult.dispose();
   return printed;
 }
 
@@ -192,17 +231,20 @@ function inferLoader(filePath: string): "ts" | "tsx" {
 }
 
 function handleLoad(filePath: string) {
-  const source = readFileSync(filePath, "utf-8");
   const loader = inferLoader(filePath);
 
   if (shouldSkipTransform(filePath)) {
+    const source = readFileSync(filePath, "utf-8");
     return { contents: source, loader };
   }
 
-  return {
-    contents: transformEntryGenerics(source, filePath),
-    loader,
-  };
+  const transformed = transformEntryGenerics(filePath);
+  if (!transformed) {
+    const source = readFileSync(filePath, "utf-8");
+    return { contents: source, loader };
+  }
+
+  return { contents: transformed, loader };
 }
 
 plugin({

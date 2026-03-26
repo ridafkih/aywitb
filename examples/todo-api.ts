@@ -1,6 +1,6 @@
-import { entry } from "../index.ts";
+import { aywitb } from "../index.ts";
 
-await entry(`
+await aywitb(`
   a REST API for a todo list hosted on port 3000
   it should support CRUD operations:
   - POST /todos to create a todo with a title

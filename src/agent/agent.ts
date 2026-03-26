@@ -158,7 +158,25 @@ export async function runAgent(
   const verbose = options?.verbose ?? false;
 
   const userPrompt = options?.contract
-    ? `${description}\n\nThe entrypoint (index.ts) MUST export a default value matching this TypeScript type:\n\`\`\`ts\nexport default <implementation> satisfies ${options.contract}\n\`\`\`\nDo NOT run the code as a program. Export it as a library.`
+    ? [
+        "## What to Build",
+        "",
+        "Implement and default-export a value that satisfies this TypeScript type:",
+        "",
+        "```ts",
+        `type Contract = ${options.contract}`,
+        "```",
+        "",
+        "This type is your entire specification. Implement exactly what it describes — nothing more.",
+        "",
+        "## Background Context",
+        "",
+        "The following is context provided by the caller. It may describe the environment this code will run in,",
+        "reference other systems, or contain source code of related programs. Use it to understand intent and",
+        "behavior, but do not re-implement anything described here. Your only job is to implement the contract above.",
+        "",
+        description,
+      ].join("\n")
     : description;
 
   if (verbose) {

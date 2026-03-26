@@ -1,8 +1,10 @@
 import { aywitb } from "../index.ts";
 
-const sum = await aywitb<(a: number, b: number) => { sum: number }>(
+type SumFn = (a: number, b: number) => { sum: number };
+
+const sum = await aywitb<SumFn>(
   "a function that takes two numbers and returns an object with their sum",
-  { verbose: true }
+  { verbose: true },
 );
 
 console.log(sum(2, 3));
