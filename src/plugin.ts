@@ -47,12 +47,7 @@ function resolveImportToPackage(specifier: string, importingFilePath: string): b
   return isPackageInternalFile(resolvedPath);
 }
 
-function getImportedName(element: ts.ImportSpecifier): string {
-  if (element.propertyName) return element.propertyName.text;
-  return element.name.text;
-}
-
-function collectEntryBindings(sourceFile: ts.SourceFile, filePath: string): Set<string> {
+function collectPackageBindings(sourceFile: ts.SourceFile, filePath: string): Set<string> {
   const localNames = new Set<string>();
 
   for (const statement of sourceFile.statements) {
@@ -65,33 +60,31 @@ function collectEntryBindings(sourceFile: ts.SourceFile, filePath: string): Set<
     const importClause = statement.importClause;
     if (!importClause) continue;
 
-    if (importClause.name?.text === "entry") {
-      localNames.add("entry");
+    if (importClause.name) {
+      localNames.add(importClause.name.text);
     }
 
     const namedBindings = importClause.namedBindings;
     if (!namedBindings || !ts.isNamedImports(namedBindings)) continue;
 
     for (const element of namedBindings.elements) {
-      if (getImportedName(element) === "entry") {
-        localNames.add(element.name.text);
-      }
+      localNames.add(element.name.text);
     }
   }
 
   return localNames;
 }
 
-function isEntryCallWithGeneric(
+function isPackageCallWithGeneric(
   node: ts.Node,
-  entryNames: Set<string>,
+  packageBindings: Set<string>,
 ): node is ts.CallExpression & {
   expression: ts.Identifier;
   typeArguments: ts.NodeArray<ts.TypeNode>;
 } {
   if (!ts.isCallExpression(node)) return false;
   if (!ts.isIdentifier(node.expression)) return false;
-  if (!entryNames.has(node.expression.text)) return false;
+  if (!packageBindings.has(node.expression.text)) return false;
   if (!node.typeArguments || node.typeArguments.length !== 1) return false;
   if (node.arguments.length < 1) return false;
   return true;
@@ -158,12 +151,12 @@ function buildReplacementNode(
 }
 
 function createTransformer(
-  entryNames: Set<string>,
+  packageBindings: Set<string>,
   checker: ts.TypeChecker,
 ): ts.TransformerFactory<ts.SourceFile> {
   return (context) => {
     function visitor(node: ts.Node): ts.Node {
-      if (isEntryCallWithGeneric(node, entryNames)) {
+      if (isPackageCallWithGeneric(node, packageBindings)) {
         return buildReplacementNode(node, checker);
       }
       return ts.visitEachChild(node, visitor, context);
@@ -211,11 +204,11 @@ function transformEntryGenerics(filePath: string): string | null {
     throw new Error(`Program could not locate source file: ${filePath}`);
   }
 
-  const entryNames = collectEntryBindings(sourceFile, filePath);
-  if (entryNames.size === 0) return null;
+  const packageBindings = collectPackageBindings(sourceFile, filePath);
+  if (packageBindings.size === 0) return null;
 
   const checker = program.getTypeChecker();
-  const transformResult = ts.transform(sourceFile, [createTransformer(entryNames, checker)]);
+  const transformResult = ts.transform(sourceFile, [createTransformer(packageBindings, checker)]);
   const transformedFile = transformResult.transformed[0];
   if (!transformedFile) {
     throw new Error("Transform produced no output");
