@@ -2,8 +2,18 @@
 
 This is the anything library, it does anything.
 
+```sh
+bun add aywitb
+```
+
+Add the plugin to your `bunfig.toml` so generic types can be resolved at runtime:
+
+```toml
+preload = ["aywitb/plugin"]
+```
+
 ```ts
-import { aywitb } from "../index.ts";
+import { aywitb } from "aywitb";
 
 type WebSocketServer = {
   startServer({ port }: { port: number }): void;
@@ -18,7 +28,7 @@ const server = await aywitb<WebSocketServer>(`
 
 server.on("verbose-log", console.log);
 server.startServer({ port: 3000 });
-````
+```
 
 ## Questions?
 
