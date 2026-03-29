@@ -15,6 +15,9 @@
     },
     "./plugin": "./dist/plugin.js"
   },
+  "repository": {
+    "url": "https://github.com/ridafkih/aywitb"
+  },
   "scripts": {
     "build": "bun run build:js && bun run build:plugin && bun run build:types",
     "build:js": "bun build ./src/index.ts --outdir ./dist --target bun --format esm --packages external --sourcemap=external",
