@@ -18,8 +18,8 @@
   },
   "scripts": {
     "build": "bun run build:js && bun run build:plugin && bun run build:types",
-    "build:js": "bun build ./src/index.ts --outdir ./dist --target bun --format esm --sourcemap=external",
-    "build:plugin": "bun build ./src/plugin.ts --outdir ./dist --target bun --format esm --entry-naming plugin.js",
+    "build:js": "bun build ./src/index.ts --outdir ./dist --target bun --format esm --packages external --sourcemap=external",
+    "build:plugin": "bun build ./src/plugin.ts --outdir ./dist --target bun --format esm --packages external --entry-naming plugin.js",
     "build:types": "tsc --noEmit false --declaration --emitDeclarationOnly --outDir ./dist",
     "test": "bun test"
   },
