@@ -1,4 +1,4 @@
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 type SumFn = (a: number, b: number) => { sum: number };
 

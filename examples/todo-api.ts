@@ -1,4 +1,4 @@
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 await aywitb(`
   a REST API for a todo list hosted on port 3000

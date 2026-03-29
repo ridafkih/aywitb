@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 const server = await Bun.file(join(import.meta.dir, "websocket-chat-server.ts")).text();
 

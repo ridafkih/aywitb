@@ -1,4 +1,4 @@
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 await aywitb(`
   a CLI tool that reads a markdown file from the first

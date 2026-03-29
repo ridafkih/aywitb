@@ -6,7 +6,7 @@ import { createWorkspace } from "./workspace/workspace.ts";
 import { join } from "node:path";
 import type { EntryOptions } from "./config.ts";
 
-export type { EntryOptions } from "./config.ts";
+export type { EntryOptions as AywitbOptions } from "./config.ts";
 
 function hashDescription(description: string, contract?: string): string {
   const seed = Bun.hash(description);
@@ -109,3 +109,5 @@ export async function entry(description: string, options?: EntryOptions): Promis
   if (contract) return importProgram(result);
   await runProgram(result);
 }
+
+export { entry as aywitb };

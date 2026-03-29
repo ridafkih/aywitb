@@ -1,4 +1,4 @@
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 type WebSocketServer = {
   startServer({ port }: { port: number }): void;

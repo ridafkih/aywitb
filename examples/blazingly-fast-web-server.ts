@@ -1,4 +1,4 @@
-import { aywitb } from "../index.ts";
+import { aywitb } from "../src/index.ts";
 
 const { serve } = await aywitb<{ serve: (port: number) => Promise<void> }>(`
   a blazingly fast web server that returns a random
